@@ -9,7 +9,6 @@
 A Claude Code plugin that picks the skills, plugins and MCP servers your task actually needs,<br>
 then checks who wrote them, how fresh they are and what they can do on your machine.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/Jokesflow/skill-scout/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Jokesflow/skill-scout/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3ddc84?style=flat-square)](LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-d97757?style=flat-square)](https://code.claude.com/docs/en/plugins/install)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-3776ab?style=flat-square&logo=python&logoColor=white)](skills/skill-scout/scripts/scout.py)
