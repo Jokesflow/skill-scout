@@ -38,7 +38,9 @@ TIMEOUT = 15
 REGISTRY = "https://registry.modelcontextprotocol.io/v0.1"
 GITHUB_API = "https://api.github.com"
 RAW = "https://raw.githubusercontent.com"
-CACHE_DIR = os.path.join(tempfile.gettempdir(), "skill-scout-cache")
+GITHUB_OWNER = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})"
+GITHUB_NAME = r"[A-Za-z0-9._-]+"
+SAFE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 # Anthropic catalogs searched even when the user hasn't added them: (marketplace name, GitHub repo).
 KNOWN_CATALOGS = [
@@ -115,22 +117,51 @@ def fetch_json(url, **kwargs):
         raise FetchError("not JSON: " + short(text, 80))
 
 
-def cached_fetch(url, ttl=24 * 3600):
-    path = os.path.join(CACHE_DIR, re.sub(r"[^A-Za-z0-9]+", "_", url)[-150:])
+def cache_dir():
+    """A per-user cache folder: $XDG_CACHE_HOME, %LOCALAPPDATA% on Windows, else ~/.cache."""
+    base = os.environ.get("XDG_CACHE_HOME") or (os.environ.get("LOCALAPPDATA") if os.name == "nt" else None)
+    return os.path.join(base or os.path.join(os.path.expanduser("~"), ".cache"), "skill-scout")
+
+
+def owned(path):
+    """True when the current user owns the path; always True where the OS has no uids."""
+    if not hasattr(os, "getuid"):
+        return True
     try:
-        if time.time() - os.path.getmtime(path) < ttl:
+        return os.stat(path).st_uid == os.getuid()
+    except OSError:
+        return False
+
+
+def cached_fetch(url, ttl=24 * 3600, fresh=False):
+    """Public catalog files, cached for a day in a folder only the current user owns."""
+    folder = cache_dir()
+    path = os.path.join(folder, re.sub(r"[^A-Za-z0-9]+", "_", url)[-150:])
+    try:
+        if not fresh and owned(folder) and owned(path) and time.time() - os.path.getmtime(path) < ttl:
             with open(path, encoding="utf-8") as handle:
                 return handle.read()
     except OSError:
         pass
     text = fetch(url)
     try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        if owned(folder):
+            with open(path + ".tmp", "w", encoding="utf-8") as handle:
+                handle.write(text)
+            os.replace(path + ".tmp", path)
     except OSError:
         pass
     return text
+
+
+def sh(word):
+    """Quote a word for the shell unless it is plain, so placeholders such as <TOKEN> stay text
+    instead of becoming redirections."""
+    word = str(word)
+    if re.match(r"^[A-Za-z0-9_@%+=:,./-]+$", word):
+        return word
+    return '"%s"' % re.sub(r'(["\\$`])', r"\\\1", word)
 
 
 def run_claude(args, timeout=90):
@@ -262,6 +293,8 @@ def origin_of(source, catalog_repo=None, catalog_dir=None):
     if isinstance(source, str):
         path = source[2:] if source.startswith("./") else source
         path = "" if path in (".", "") else path.strip("/")
+        if ".." in path.split("/"):
+            return {"other": source}
         local = os.path.join(catalog_dir, *path.split("/")) if catalog_dir and path else catalog_dir
         if not catalog_repo and not local:
             return {"other": source}
@@ -273,8 +306,9 @@ def origin_of(source, catalog_repo=None, catalog_dir=None):
         return {"repo": source["repo"], "path": "", "ref": ref}
     if kind in ("url", "git-subdir"):
         repo = github_repo(source.get("url", ""))
-        if repo:
-            return {"repo": repo, "path": (source.get("path") or "").strip("/"), "ref": ref}
+        path = str(source.get("path") or "").strip("/")
+        if repo and ".." not in path.split("/"):
+            return {"repo": repo, "path": path, "ref": ref}
         return {"other": source.get("url", "?")}
     if kind == "npm":
         return {"other": "npm:" + str(source.get("package"))}
@@ -327,10 +361,14 @@ def load_catalogs():
     def load(item):
         name, repo = item
         url = "%s/%s/HEAD/.claude-plugin/marketplace.json" % (RAW, repo)
-        try:
-            return json.loads(cached_fetch(url))
-        except ValueError:
-            raise FetchError("bad catalog JSON")
+        for fresh in (False, True):  # a cached copy that no longer parses is fetched again
+            try:
+                data = json.loads(cached_fetch(url, fresh=fresh))
+                if isinstance(data, dict):
+                    return data
+            except ValueError:
+                pass
+        raise FetchError("bad catalog JSON")
 
     for (name, repo), data, err in parallel(load, missing):
         if err:
@@ -478,46 +516,60 @@ def placeholders(text):
 
 
 def package_args(arguments):
-    rendered = []
+    """Registry argument specs as shell words: fixed values, and required ones as placeholders."""
+    words = []
     for arg in arguments or []:
+        if not isinstance(arg, dict):
+            continue
         value = arg.get("value") or arg.get("default")
         if not value and not arg.get("isRequired"):
             continue
         value = placeholders(value) if value else "<%s>" % (arg.get("valueHint") or arg.get("name") or "value")
         if arg.get("type") == "named" and arg.get("name"):
-            rendered.append("%s %s" % (arg["name"], value))
-        else:
-            rendered.append(str(value))
-    return rendered
+            words.append(sh(arg["name"]))
+        words.append(sh(value))
+    return words
+
+
+RUNNERS = {"npm": "npx", "pypi": "uvx", "oci": "docker"}
+DEFAULT_REGISTRIES = ("https://registry.npmjs.org", "https://pypi.org", "https://docker.io")
 
 
 def mcp_install_lines(server):
-    """Install commands built only from registry metadata; never guessed."""
+    """Install commands built only from registry metadata, plus notes on what they can't cover."""
     label, lines = mcp_label(server.get("name", "")), []
     for remote in server.get("remotes") or []:
         transport = {"streamable-http": "http", "sse": "sse"}.get(remote.get("type"))
         if not transport or not remote.get("url"):
             continue
-        headers = ["--header \"%s: <%s>\"" % (h.get("name"), h.get("name"))
-                   for h in remote.get("headers") or [] if h.get("isRequired")]
-        lines.append("claude mcp add --transport %s %s %s%s" % (
-            transport, label, placeholders(remote["url"]), " " + " ".join(headers) if headers else ""))
+        headers = ["--header " + sh("%s: <%s>" % (h.get("name"), h.get("name")))
+                   for h in remote.get("headers") or [] if isinstance(h, dict) and h.get("isRequired")]
+        lines.append("install: claude mcp add --transport %s %s %s%s" % (
+            transport, label, sh(placeholders(remote["url"])), " " + " ".join(headers) if headers else ""))
     for package in server.get("packages") or []:
-        if (package.get("transport") or {}).get("type", "stdio") != "stdio":
+        if not isinstance(package, dict) or (package.get("transport") or {}).get("type", "stdio") != "stdio":
             continue
         kind, ident, version = package.get("registryType"), package.get("identifier"), package.get("version")
-        envs = [e.get("name") for e in package.get("environmentVariables") or [] if e.get("isRequired")]
-        env_flags = "".join(" -e %s=<%s>" % (name, name) for name in envs)
-        if kind == "npm":
-            command = "npx -y %s%s" % (ident, "@" + version if version else "")
-        elif kind == "pypi":
-            command = "uvx %s%s" % (ident, "@" + version if version else "")
-        elif kind == "oci":
-            command = "docker run -i --rm%s %s" % ("".join(" -e " + n for n in envs), ident)
-        else:
+        if kind not in RUNNERS or not ident:
             continue
-        args = package_args(package.get("packageArguments"))
-        lines.append("claude mcp add %s%s -- %s%s" % (label, env_flags, command, " " + " ".join(args) if args else ""))
+        envs = [e.get("name") for e in package.get("environmentVariables") or []
+                if isinstance(e, dict) and e.get("isRequired") and e.get("name")]
+        runtime = package_args(package.get("runtimeArguments"))
+        if kind == "npm":
+            command = ["npx"] + ([] if {"-y", "--yes"} & set(runtime) else ["-y"]) + runtime
+            command.append(sh("%s@%s" % (ident, version) if version else ident))
+        elif kind == "pypi":
+            command = ["uvx"] + runtime + [sh("%s@%s" % (ident, version) if version else ident)]
+        else:
+            command = ["docker", "run", "-i", "--rm"] + ["-e " + sh(n) for n in envs] + runtime + [sh(ident)]
+        command += package_args(package.get("packageArguments"))
+        env_flags = "".join(" -e " + sh("%s=<%s>" % (n, n)) for n in envs)
+        lines.append("install: claude mcp add %s%s -- %s" % (label, env_flags, " ".join(command)))
+        hint, base = package.get("runtimeHint"), package.get("registryBaseUrl")
+        if hint and hint != RUNNERS[kind]:
+            lines.append("note: the registry suggests running it with %s; check the README" % hint)
+        if base and not base.rstrip("/").startswith(DEFAULT_REGISTRIES):
+            lines.append("note: the package comes from %s, not the default registry" % base)
     return lines
 
 
@@ -545,7 +597,7 @@ def describe_server(server, meta, number=None):
         print("    package %s%s" % (" ".join(str(p) for p in parts if p),
                                     " · needs env " + ", ".join(envs) if envs else ""))
     for line in mcp_install_lines(server):
-        print("    install: " + line)
+        print("    " + line)
 
 
 def cmd_mcp(args):
@@ -615,8 +667,22 @@ def cmd_github(args):
 
 # --------------------------------------------------------------------------- inspect
 
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".mcpb-cache"}
+MAX_LOCAL_FILES = 20000
+MAX_DOCS = 60
+
+
+def check_github(repo, ref=None):
+    """Refuse repository names and refs that could be read as options or break a URL."""
+    if not re.match(r"^%s/%s$" % (GITHUB_OWNER, GITHUB_NAME), repo or ""):
+        raise FetchError("not a GitHub repository name: %r" % repo)
+    if ref and (ref.startswith("-") or ".." in ref or not SAFE_REF.match(ref)):
+        raise FetchError("refusing a suspicious git ref: %r" % ref)
+
+
 def git_listing(repo, ref, path):
     """File list and commit date of one revision, fetched without file contents (no API quota)."""
+    check_github(repo, ref)
     git = shutil.which("git")
     if not git:
         raise FetchError("git is not installed")
@@ -632,7 +698,8 @@ def git_listing(repo, ref, path):
                 raise FetchError(short(proc.stderr, 160) or "git failed")
             return proc.stdout
         run("init", "-q")
-        run("fetch", "-q", "--depth", "1", "--filter=blob:none", "https://github.com/%s.git" % repo, ref or "HEAD")
+        run("fetch", "-q", "--depth", "1", "--filter=blob:none", "--",
+            "https://github.com/%s.git" % repo, ref or "HEAD")
         names = run("ls-tree", "-r", "--name-only", "FETCH_HEAD", "--", path or ".").splitlines()
         date = run("log", "-1", "--format=%cI", "FETCH_HEAD").strip()
     prefix = path + "/" if path else ""
@@ -644,6 +711,8 @@ class Source:
     (a marketplace clone on disk whose repository is known)."""
 
     def __init__(self, repo=None, path="", ref=None, local=None):
+        if repo:
+            check_github(repo, ref)
         self.repo, self.path, self.ref, self.local = repo, (path or "").strip("/"), ref, local
         self.files = None  # relative paths under the plugin root, when a listing is available
 
@@ -658,9 +727,12 @@ class Source:
         if self.local:
             out = []
             for root, dirs, names in os.walk(self.local):
-                dirs[:] = [d for d in dirs if d not in (".git", "node_modules", ".venv", "__pycache__")]
-                for name in names:
-                    out.append(os.path.relpath(os.path.join(root, name), self.local).replace(os.sep, "/"))
+                dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+                out.extend(os.path.relpath(os.path.join(root, name), self.local).replace(os.sep, "/")
+                           for name in sorted(names))
+                if len(out) >= MAX_LOCAL_FILES:
+                    warn("stopped listing after %d files; component counts may be incomplete" % MAX_LOCAL_FILES)
+                    break
             self.files = out
             return
         prefix = self.path + "/" if self.path else ""
@@ -674,8 +746,9 @@ class Source:
                 raise FetchError("GitHub API: %s; git: %s" % (api_err, git_err))
             print("Revision date (git): %s" % day(date))
             return
-        self.files = [item["path"][len(prefix):] for item in tree.get("tree", [])
-                      if item.get("type") == "blob" and item.get("path", "").startswith(prefix)]
+        self.files = sorted(item["path"][len(prefix):] for item in tree.get("tree", [])
+                            if isinstance(item, dict) and item.get("type") == "blob"
+                            and str(item.get("path", "")).startswith(prefix))
         if tree.get("truncated"):
             warn("file listing truncated by GitHub; component counts may be incomplete")
 
@@ -704,8 +777,11 @@ class Source:
 
 def resolve_target(target):
     """Returns (Source or None, registry server name or None)."""
+    target = target.strip()
     if os.path.isdir(target):
         return Source(local=os.path.abspath(target)), None
+    if target.startswith((".", "/", "~", "\\")) or re.match(r"^[A-Za-z]:[\\/]", target):
+        raise FetchError("no such directory: %s" % target)
     if "@" in target and "/" not in target:
         entries, _installed, _registered, notes = load_catalogs()
         for note in notes:
@@ -720,16 +796,20 @@ def resolve_target(target):
         if not origin.get("repo"):
             raise FetchError("%s is not hosted on GitHub (%s); review it manually" % (target, origin.get("other")))
         return Source(origin["repo"], origin["path"], origin["ref"]), None
-    match = re.match(r"^https?://(?:www\.)?github\.com/([^/]+)/([^/#?]+)(?:/(?:tree|blob)/([^/]+)/?(.*))?", target)
-    if match:
-        owner, repo, ref, path = match.groups()
-        return Source("%s/%s" % (owner, re.sub(r"\.git$", "", repo)), path or "", ref), None
-    if re.match(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^/]+$", target):
+    if re.match(r"^(?:https?://)?(?:www\.)?github\.com/", target, re.I):
+        match = re.match(r"^(?:https?://)?(?:www\.)?github\.com/(%s)/([A-Za-z0-9._-]+?)(?:\.git)?"
+                         r"(?:/(?:tree|blob)/([^/?#]+)/?([^?#]*))?/?(?:[?#].*)?$" % GITHUB_OWNER, target, re.I)
+        if not match:
+            raise FetchError("not a GitHub repository URL: %s" % target)
+        owner, name, ref, path = match.groups()
+        return Source("%s/%s" % (owner, name), (path or "").strip("/"), ref), None
+    if re.match(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^/\s]+$", target):
         return None, target  # reverse-DNS MCP Registry name, e.g. com.figma.mcp/mcp
-    parts = target.strip("/").split("/")
-    if len(parts) >= 2:
-        return Source("/".join(parts[:2]), "/".join(parts[2:])), None
-    raise FetchError("can't interpret target %r" % target)
+    match = re.match(r"^(%s)/(%s)(?:/(.+))?$" % (GITHUB_OWNER, GITHUB_NAME), target.strip("/"))
+    if match:
+        return Source("%s/%s" % (match.group(1), match.group(2)), match.group(3) or ""), None
+    raise FetchError("can't interpret %r: use name@marketplace, a GitHub URL, owner/repo[/path], "
+                     "an MCP Registry name or a local directory" % target)
 
 
 def repo_health(repo, path, ref):
@@ -738,9 +818,10 @@ def repo_health(repo, path, ref):
     except FetchError as err:
         warn("repository metadata unavailable (%s); check stars/license/activity on the GitHub page" % err)
         return
+    owner = info.get("owner") if isinstance(info.get("owner"), dict) else {}
     print("Repo: github.com/%s · ★%s · owner %s (%s) · %s · last push %s%s" % (
-        repo, info.get("stargazers_count"), (info.get("owner") or {}).get("login"),
-        (info.get("owner") or {}).get("type"), (info.get("license") or {}).get("spdx_id") or "no license",
+        repo, info.get("stargazers_count"), owner.get("login"), owner.get("type"),
+        (info.get("license") or {}).get("spdx_id") or "no license",
         day(info.get("pushed_at")), " · ARCHIVED" if info.get("archived") else ""))
     query = {"per_page": 1}
     if path:
@@ -759,17 +840,24 @@ def repo_health(repo, path, ref):
 
 def summarize_hooks(data, where):
     lines = []
-    events = data.get("hooks", data) if isinstance(data, dict) else {}
-    if isinstance(data, dict) and data.get("modules"):
+    if not isinstance(data, dict):
+        return ["⚠ %s is not a JSON object; review it by hand" % where]
+    if data.get("modules"):
+        modules = data["modules"] if isinstance(data["modules"], list) else [data["modules"]]
         lines.append("⚠ mod (JavaScript inside Claude Code with fs/process/http access): %s in %s"
-                     % (", ".join(map(str, data["modules"])), where))
+                     % (", ".join(map(str, modules)), where))
+    events = data.get("hooks", data)
     for event, groups in (events.items() if isinstance(events, dict) else []):
         if event == "modules" or not isinstance(groups, list):
             continue
         for group in groups:
-            for hook in (group or {}).get("hooks") or []:
-                action = hook.get("command") or hook.get("url") or hook.get("prompt") or ""
-                if hook.get("args"):
+            if not isinstance(group, dict):
+                continue
+            for hook in group.get("hooks") or []:
+                if not isinstance(hook, dict):
+                    continue
+                action = str(hook.get("command") or hook.get("url") or hook.get("prompt") or "")
+                if isinstance(hook.get("args"), list):
                     action += " " + " ".join(map(str, hook["args"]))
                 line = "⚠ hook %s[%s] %s: %s" % (event, group.get("matcher") or "*",
                                                 hook.get("type", "?"), short(action, 110))
@@ -786,33 +874,87 @@ def summarize_mcp(data, where):
     for name, cfg in (servers.items() if isinstance(servers, dict) else []):
         if not isinstance(cfg, dict):
             continue
-        supplied = dict(cfg.get("env") or {})
-        supplied.update(cfg.get("headers") or {})
+        supplied = {}
+        for key in ("env", "headers"):
+            if isinstance(cfg.get(key), dict):
+                supplied.update(cfg[key])
         secrets = sorted(key for key, value in supplied.items() if not value or "${" in str(value))
         needs = " · needs " + ", ".join(secrets) if secrets else ""
         if cfg.get("url"):
             lines.append("• remote MCP %s (%s): %s%s — data goes to this service"
                          % (name, cfg.get("type", "http"), cfg["url"], needs))
         else:
-            command = " ".join([str(cfg.get("command", "?"))] + [str(a) for a in cfg.get("args") or []])
+            args = cfg.get("args") if isinstance(cfg.get("args"), list) else []
+            command = " ".join([str(cfg.get("command", "?"))] + [str(a) for a in args])
             lines.append("⚠ local MCP %s: %s%s — runs as a process with your user rights"
                          % (name, short(command, 100), needs))
     return lines
 
 
-# allowed-tools rules that amount to "run anything": bare Bash/PowerShell/Write/Edit, a lone
-# wildcard, or an interpreter followed by a wildcard such as Bash(python3 *).
-BROAD_GRANT = re.compile(
-    r"(?:^|[\s,\[])(?:(?:Bash|PowerShell|Write|Edit)(?![\w(])|(?:Bash|PowerShell|Write|Edit)\(\s*\**\s*\)"
-    r"|(?:Bash|PowerShell)\(\s*(?:python3?|node|bash|sh|zsh|npx|uvx|bunx?|deno|ruby|perl|pwsh|powershell"
-    r"|sudo|curl|wget)(?:\s+\*|:\*)\s*\))")
+# allowed-tools rules that amount to "run anything" or "write anywhere".
+INTERPRETERS = {"bash", "sh", "zsh", "fish", "dash", "ksh", "pwsh", "powershell", "cmd", "python", "python3",
+                "py", "node", "deno", "bun", "ruby", "perl", "php", "osascript"}
+EXECUTORS = {"npx", "uvx", "bunx", "pnpx"}
+MANAGERS = {"npm", "pnpm", "yarn", "uv", "pip", "pip3", "pipx", "cargo", "go", "docker", "podman", "make",
+            "gradle", "mvn"}
+WRAPPERS = {"sudo", "env", "xargs", "eval", "exec", "nohup", "timeout", "nice", "watch", "curl", "wget", "ssh"}
+INLINE_FLAGS = {"-c", "-e", "--eval", "-m", "-", "-p", "--print", "-r", "-command", "-encodedcommand", "/c"}
+RUN_VERBS = {"run", "exec", "x", "dlx", "install", "i", "add", "start"}
+FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+
+
+def grant_rules(value):
+    """allowed-tools as (tool, pattern) pairs, whether written as a string, a YAML list or JSON."""
+    text = re.sub(r"[\"'\[\]]", " ", str(value))
+    text = re.sub(r"(^|\s)-(?=\s|$)", " ", text)
+    return [(m.group(1), (m.group(2) or "").strip())
+            for m in re.finditer(r"([A-Za-z_][\w.:-]*)(?:\(([^)]*)\))?", text)]
+
+
+def broad_rule(tool, pattern):
+    if tool in FILE_TOOLS:
+        return not pattern or bool(re.match(r"^[/~*]*$", pattern.replace("\\", "/")))
+    if tool not in ("Bash", "PowerShell"):
+        return False
+    words = pattern.replace(":*", " *").split()
+    if not words or all(set(word) <= {"*"} for word in words):
+        return True
+    program = re.split(r"[\\/]", words[0])[-1].lower()
+    program = program[:-4] if program.endswith(".exe") else program
+    args = words[1:]
+    if program not in INTERPRETERS | EXECUTORS | MANAGERS | WRAPPERS:
+        return False
+    if not args or "*" in args[0]:
+        return True
+    if program in INTERPRETERS and args[0].lower() in INLINE_FLAGS:
+        return True
+    if program in EXECUTORS:
+        rest = [a for a in args if not a.startswith("-")]
+        return not rest or "*" in rest[0]
+    if program in INTERPRETERS | MANAGERS and args[0] in RUN_VERBS:
+        return len(args) < 2 or "*" in args[1]
+    return False
+
+
+def broad_grants(value):
+    return ["%s(%s)" % (tool, pattern) if pattern else tool
+            for tool, pattern in grant_rules(value) if broad_rule(tool, pattern)]
+
+
+def grant_line(where, value):
+    broad = broad_grants(value)
+    return "%s %s pre-approves tools: %s%s" % ("⚠" if broad else "•", where, short(value, 80),
+                                                " (broad: %s)" % ", ".join(broad) if broad else "")
+
+
+MISSING = object()
 
 
 def read_json(src, rel):
-    """Parsed JSON file of the plugin, None when absent, or the string 'unreadable'."""
+    """Parsed JSON file of the plugin, MISSING when absent, or the string 'unreadable'."""
     text = src.read(rel)
-    if not text:
-        return None
+    if text is None:
+        return MISSING
     try:
         return json.loads(text)
     except ValueError:
@@ -824,39 +966,71 @@ def declared(manifest, key):
     return value if isinstance(value, list) else [value] if value else []
 
 
+def norm(path):
+    return re.sub(r"^\./", "", str(path)).strip("/")
+
+
+def under(path, root):
+    return not root or path == root or path.startswith(root + "/")
+
+
 def inspect_plugin(src):
     try:
         src.list_files()
     except FetchError as err:
         warn("file listing unavailable (%s); checking the well-known files only" % err)
+    if src.files is not None and not src.files:
+        warn("no files at %s: a wrong path, or the marketplace keeps its plugins elsewhere" % src.label())
+        return 1
 
-    manifest_text = src.read(".claude-plugin/plugin.json") or src.read("plugin.json")
-    manifest = {}
-    if manifest_text:
-        try:
-            manifest = json.loads(manifest_text)
-        except ValueError:
-            warn("plugin.json is not valid JSON")
+    manifest = read_json(src, ".claude-plugin/plugin.json")
+    if manifest is MISSING:
+        manifest = read_json(src, "plugin.json")
+    if manifest is MISSING:
+        manifest = {}
+    elif not isinstance(manifest, dict):
+        warn("plugin.json is not a JSON object; checking the default locations only")
+        manifest = {}
     if manifest:
         author = manifest.get("author") if isinstance(manifest.get("author"), dict) else {}
         print("Manifest: %s v%s · author %s · license %s%s" % (
             manifest.get("name"), manifest.get("version", "?"), author.get("name", "?"),
-            manifest.get("license", "?"), " · " + manifest["homepage"] if manifest.get("homepage") else ""))
+            manifest.get("license", "?"), " · %s" % manifest["homepage"] if manifest.get("homepage") else ""))
         options = manifest.get("userConfig") if isinstance(manifest.get("userConfig"), dict) else {}
         if options:
             print("Asks the user for: " + ", ".join(
-                "%s%s" % (key, " (sensitive)" if (value or {}).get("sensitive") else "")
+                "%s%s" % (key, " (sensitive)" if isinstance(value, dict) and value.get("sensitive") else "")
                 for key, value in options.items()))
-        if manifest.get("dependencies"):
+        deps = declared(manifest, "dependencies")
+        if deps:
             print("Also installs dependencies: " + ", ".join(
-                d if isinstance(d, str) else str(d.get("name")) for d in manifest["dependencies"]))
+                str(d.get("name")) if isinstance(d, dict) else str(d) for d in deps))
 
     files = src.files or []
-    skills = sorted({f.split("/")[1] for f in files if re.match(r"^skills/[^/]+/SKILL\.md$", f)})
-    if "SKILL.md" in files:
-        skills.append("(root SKILL.md)")
-    commands = [f for f in files if f.startswith("commands/") and f.endswith(".md")]
-    agents = [f for f in files if f.startswith("agents/") and f.endswith(".md")]
+    skill_roots = ["skills"] + [norm(p) for p in declared(manifest, "skills") if isinstance(p, str)]
+    skill_md = [re.compile(r"^%s(?:[^/]+/)?SKILL\.md$" % (re.escape(root) + "/" if root else ""))
+                for root in skill_roots]
+    skill_files = sorted({f for f in files if any(p.match(f) for p in skill_md)})
+    skills = sorted({f.split("/")[-2] if "/" in f else "(root)" for f in skill_files})
+
+    spec, command_files, inline = manifest.get("commands"), [], []
+    if isinstance(spec, dict):  # an object map replaces commands/
+        command_roots = []
+        for name, entry in spec.items():
+            if not isinstance(entry, dict):
+                continue
+            if isinstance(entry.get("source"), str):
+                command_files.append(norm(entry["source"]))
+            if entry.get("allowedTools"):
+                tools = entry["allowedTools"]
+                inline.append(("plugin.json commands.%s" % name,
+                               " ".join(map(str, tools)) if isinstance(tools, list) else str(tools)))
+    else:
+        command_roots = [norm(p) for p in declared(manifest, "commands") if isinstance(p, str)] or ["commands"]
+    commands = sorted({f for f in files if f.endswith(".md")
+                       and (f in command_files or any(under(f, r) for r in command_roots))})
+    agent_roots = [norm(p) for p in declared(manifest, "agents") if isinstance(p, str)] or ["agents"]
+    agents = sorted({f for f in files if f.endswith(".md") and any(under(f, r) for r in agent_roots)})
     binaries = [f for f in files if f.startswith("bin/")]
     code = [f for f in files if re.search(r"\.(sh|py|js|mjs|cjs|ts|ps1|rb|go)$", f)]
     if src.files is not None:
@@ -871,33 +1045,37 @@ def inspect_plugin(src):
             if isinstance(item, dict):
                 risks += summarize(item, "plugin.json")
                 continue
-            rel = re.sub(r"^\./", "", str(item))
+            rel = norm(item)
             if not rel.endswith(".json"):
                 risks.append("⚠ %s from %s (bundle or URL; review it by hand)" % (kind, item))
                 continue
             data = read_json(src, rel)
             if data == "unreadable":
                 risks.append("⚠ %s present but unreadable" % rel)
-            elif data is not None:
+            elif data is not MISSING:
                 risks += summarize(data, rel)
 
+    experimental = manifest.get("experimental") if isinstance(manifest.get("experimental"), dict) else {}
     if src.read(".lsp.json") or manifest.get("lspServers"):
         risks.append("⚠ LSP server: starts a language-server process")
     if binaries:
         risks.append("⚠ bin/: %d executables added to the Bash PATH (%s)" % (len(binaries), ", ".join(binaries[:5])))
-    if src.has("monitors/monitors.json") or (manifest.get("experimental") or {}).get("monitors"):
+    if src.has("monitors/monitors.json") or experimental.get("monitors"):
         risks.append("⚠ monitors: background shell commands")
 
-    for rel in ([f for f in files if re.match(r"^(skills/[^/]+/SKILL\.md|commands/.+\.md)$", f)]
-                + (["SKILL.md"] if src.has("SKILL.md") else []))[:12]:
-        try:
-            meta = frontmatter(src.read(rel) or "")
-        except FetchError:
+    docs = sorted(set(skill_files) | set(commands))
+    if len(docs) > MAX_DOCS:
+        warn("checked %d of %d skill and command files for pre-approved tools and hooks" % (MAX_DOCS, len(docs)))
+    for rel, text, err in parallel(src.read, docs[:MAX_DOCS]):
+        if err or not text:
             continue
+        meta = frontmatter(text)
         tools = meta.get("allowed-tools") or meta.get("allowed_tools")
         if tools:
-            risks.append("%s %s pre-approves tools: %s" % (
-                "⚠" if BROAD_GRANT.search(tools) else "•", rel, short(tools, 90)))
+            risks.append(grant_line(rel, tools))
+        if "hooks" in meta:
+            risks.append("⚠ %s registers hooks while it runs (frontmatter hooks)" % rel)
+    risks += [grant_line(where, tools) for where, tools in inline]
 
     risks = list(dict.fromkeys(risks))  # the same file can be both the default and declared
     print("Permissions and reach:")
@@ -906,9 +1084,12 @@ def inspect_plugin(src):
     if not risks:
         if src.files is None:
             print("  no hooks/.mcp.json/.lsp.json found; bin/ and skill tool grants unknown without a file listing")
+        elif not (manifest or skill_files or commands or agents):
+            print("  ? no plugin.json, skills, commands or agents here; is this the plugin's root folder?")
         else:
             print("  ✓ nothing runs on its own: no hooks, MCP/LSP servers or bin/ executables%s" % (
                 "; its %d bundled scripts run only through Claude's Bash calls" % len(code) if code else ""))
+    return 0
 
 
 def cmd_inspect(args):
@@ -933,11 +1114,12 @@ def cmd_inspect(args):
     if src.repo:
         repo_health(src.repo, src.path, src.ref)
     try:
-        inspect_plugin(src)
+        return inspect_plugin(src)
     except FetchError as err:
         warn("could not read plugin files: %s" % err)
-        return 1
-    return 0
+    except (AttributeError, TypeError, KeyError, ValueError) as err:
+        warn("malformed plugin files (%s: %s); review them by hand" % (type(err).__name__, short(err, 100)))
+    return 1
 
 
 # --------------------------------------------------------------------------- main
@@ -963,7 +1145,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
     handler = {"inventory": cmd_inventory, "plugins": cmd_plugins, "mcp": cmd_mcp,
                "github": cmd_github, "inspect": cmd_inspect}[args.command]
-    return handler(args) or 0
+    try:
+        return handler(args) or 0
+    except BrokenPipeError:  # the reader stopped early, e.g. `| head`; not an error
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":

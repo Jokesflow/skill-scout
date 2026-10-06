@@ -35,7 +35,8 @@ marketplace lists third-party plugins too.
 | --- | --- | --- |
 | Only skills, commands, agents | Instructions for Claude; nothing runs on its own | No warning |
 | `allowed-tools` with narrow rules | Commands pre-approved while the skill's turn lasts | Mention it if Bash or Write is among them |
-| Bare `Bash`, `Write`, `Edit`, or an interpreter wildcard such as `Bash(python3 *)` in `allowed-tools` | The skill runs commands or edits files without asking | ⚠ |
+| Broad `allowed-tools`: bare `Bash`, `Write` or `Edit`; a wildcard after an interpreter, a package runner or `sudo` (`Bash(python3 *)`, `Bash(bash -c *)`, `Bash(npx *)`, `Bash(npm run *)`); `Edit(/**)` | The skill runs any command or edits any file without asking | ⚠ |
+| `hooks` in a skill's or command's frontmatter | Hooks registered while the skill runs | ⚠ |
 | Hooks in `hooks/hooks.json` | Shell commands on events, outside the sandbox, with the user's rights | ⚠, especially PreToolUse/PostToolUse on every action and a SessionStart hook that downloads something |
 | Mod (`modules` in `hooks.json`) | JavaScript inside Claude Code with access to files, processes and the network | ⚠ |
 | Local MCP server (`command`, npx, uvx, docker) | A process with the user's rights | ⚠ if the server exposes a shell, the file system or a browser |

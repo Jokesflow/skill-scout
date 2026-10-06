@@ -13,8 +13,13 @@
   unavailable, a blob-less `git fetch` into a temporary directory that it deletes afterwards.
 - If `GH_TOKEN` or `GITHUB_TOKEN` is set, the token is sent only to `api.github.com` and never
   follows a redirect to another host.
-- It caches public catalog files for 24 hours in the system temp directory
-  (`skill-scout-cache`). No telemetry.
+- It caches Anthropic's public catalog files for 24 hours in a per-user folder
+  (`$XDG_CACHE_HOME/skill-scout`, `%LOCALAPPDATA%\skill-scout` on Windows, otherwise
+  `~/.cache/skill-scout`) created with owner-only permissions, and ignores cache files it
+  doesn't own. No telemetry.
+- Git refs and repository names taken from catalogs are validated before they reach `git`, and
+  install commands quote every placeholder, so a pasted command can't turn `<TOKEN>` into a
+  shell redirection.
 
 ## Reporting a vulnerability
 

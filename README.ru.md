@@ -156,7 +156,8 @@ flowchart LR
 | ⚠ Локальные MCP-серверы | Процесс с вашими правами (`npx`, `uvx`, `docker`…) |
 | • Удалённые MCP-серверы | Данные уходят в этот сервис; видны нужные токены и OAuth |
 | ⚠ `bin/` | Исполняемые файлы в `PATH` для Bash |
-| ⚠ Широкие `allowed-tools` | Голые `Bash`, `Write`, `Edit` или `Bash(python3 *)` выполняются без вопроса |
+| ⚠ Широкие `allowed-tools` | Голые `Bash`/`Write`/`Edit`, `Bash(python3 *)`, `Bash(npx *)`, `Edit(/**)`… выполняются без вопроса |
+| ⚠ Хуки во frontmatter скилла | Регистрируются, пока скилл работает |
 | • Секреты в `userConfig`, зависимости | Что плагин попросит и что подтянет за собой |
 | Свежесть и автор | Дата изменения, звёзды, лицензия, архивные репозитории, вендор или подделка |
 
@@ -185,6 +186,7 @@ flowchart LR
 | Код | «Пишу REST API на FastAPI с PostgreSQL: нужны миграции, тесты и ревью кода перед PR…» | `/code-review` и встроенный Bash — в «Уже есть»; плагин GitHub, Python LSP или quality gate, MCP-сервер или коннектор для БД с ⚠ о правах на запись. Под Alembic плагин не нужен. |
 | Ресёрч | `/scout ресёрч рынка AI-ассистентов для юристов: свежие источники, научные статьи и итоговый отчёт в PDF` | `/scout` передаёт задачу скиллу. Веб-поиск и PDF-скилл — в «Уже есть»; инструмент для научных статей с ⚠ об авторе или локальном процессе. |
 | Маркетинг | "I'm launching a SaaS product next month: social posts, an SEO audit of our landing page and a weekly analytics report…" | Ответ на английском с английскими заголовками, закрыты все три потребности. |
+| Быстрый режим | "Build a quarterly sales deck in PowerPoint from our Google Sheets pipeline data and post a summary to our Slack #sales channel." | Прямая задача, а не вопрос: skill-scout всё равно сначала коротко проверяет инструменты. Называет уже установленный pptx-скилл и коннекторы Google Sheets и Slack с предупреждениями о доступе и спрашивает, прежде чем что-то подключать. |
 | Негативный | «Переименуй в этом фрагменте переменную x в total…» | skill-scout не вмешивается. |
 
 ## Разработка
@@ -206,7 +208,7 @@ claude plugin eval . --judge-model sonnet --allow-tools "Bash(python3 *)" WebSea
 `/scout` сделан скиллом с `disable-model-invocation: true`, а не файлом в `commands/`: в
 документации Claude Code команды — устаревший формат. Основной скилл помечен
 `user-invocable: false`, чтобы в меню `/` была одна команда. Стоимость по
-`claude plugin details`: около 300 токенов постоянно и около 3k при запуске.
+`claude plugin details`: около 380 токенов постоянно и около 3k при запуске.
 
 ## Ограничения
 

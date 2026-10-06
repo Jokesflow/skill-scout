@@ -99,7 +99,7 @@ class PluginSearchTest(unittest.TestCase):
                 return json.dumps(registered)
             return "[]"
 
-        def fake_cached(url, ttl=0):
+        def fake_cached(url, ttl=0, fresh=False):
             if "claude-plugins-official" in url:
                 return json.dumps(official)
             raise scout.FetchError("HTTP 404")
@@ -120,6 +120,29 @@ class PluginSearchTest(unittest.TestCase):
         self.assertIn("! catalog claude-community unavailable", out)
 
 
+class CacheTest(unittest.TestCase):
+    def test_cache_lives_in_a_private_user_folder(self):
+        with tempfile.TemporaryDirectory() as home:
+            os.environ["XDG_CACHE_HOME"] = home
+            try:
+                calls = []
+
+                def fake_fetch(url, **kw):
+                    calls.append(url)
+                    return '{"plugins": []}'
+                with Patch(fetch=fake_fetch):
+                    self.assertEqual(scout.cached_fetch("https://x/y.json"), '{"plugins": []}')
+                    self.assertEqual(scout.cached_fetch("https://x/y.json"), '{"plugins": []}')
+                    scout.cached_fetch("https://x/y.json", fresh=True)
+                self.assertEqual(len(calls), 2)  # the second call came from the cache
+                folder = os.path.join(home, "skill-scout")
+                self.assertTrue(os.path.isdir(folder))
+                if hasattr(os, "getuid"):
+                    self.assertEqual(os.stat(folder).st_mode & 0o077, 0)
+            finally:
+                del os.environ["XDG_CACHE_HOME"]
+
+
 class McpSearchTest(unittest.TestCase):
     def setUp(self):
         with open(os.path.join(FIXTURES, "registry_figma.json"), encoding="utf-8") as handle:
@@ -132,7 +155,7 @@ class McpSearchTest(unittest.TestCase):
         self.assertIn("publisher: verified domain mcp.figma.com", out)
         self.assertIn("publisher: GitHub account GLips", out)
         self.assertIn("install: claude mcp add --transport http figma https://mcp.figma.com/mcp", out)
-        self.assertIn("install: claude mcp add figma-context-mcp -e FIGMA_API_KEY=<FIGMA_API_KEY> -- "
+        self.assertIn('install: claude mcp add figma-context-mcp -e "FIGMA_API_KEY=<FIGMA_API_KEY>" -- '
                       "npx -y figma-developer-mcp@0.13.2 --stdio", out)
         self.assertIn("install: claude mcp add figma -- uvx mcparmory-figma@1.0.6", out)
         self.assertIn("install: claude mcp add figma -- docker run -i --rm ghcr.io/mcparmory/figma:1.0.6", out)
@@ -144,12 +167,24 @@ class McpSearchTest(unittest.TestCase):
             out = run(scout.cmd_mcp, SimpleNamespace(keywords=["figma"], limit=5))
         self.assertIn("! MCP Registry search failed for: figma (The read operation timed out)", out)
 
-    def test_placeholders_become_visible(self):
+    def test_placeholders_are_quoted_for_the_shell(self):
         self.assertEqual(scout.package_args([{"type": "named", "name": "--storage-path", "value": "${STORE}"},
                                              {"type": "positional", "value": "{mode}"},
                                              {"type": "positional", "valueHint": "dir", "isRequired": True},
                                              {"type": "named", "name": "--optional"}]),
-                         ["--storage-path <STORE>", "<mode>", "<dir>"])
+                         ["--storage-path", '"<STORE>"', '"<mode>"', '"<dir>"'])
+        self.assertEqual(scout.sh("plain-word@1.0"), "plain-word@1.0")
+        self.assertEqual(scout.sh('a"b$c'), '"a\\"b\\$c"')
+
+    def test_runtime_arguments_and_hints_are_kept(self):
+        server = {"name": "io.github.x/srv", "packages": [{
+            "registryType": "oci", "identifier": "ghcr.io/x/srv:1", "transport": {"type": "stdio"},
+            "runtimeHint": "podman", "environmentVariables": [{"name": "TOKEN", "isRequired": True}],
+            "runtimeArguments": [{"type": "named", "name": "-v", "value": "{data_dir}:/data"}]}]}
+        lines = scout.mcp_install_lines(server)
+        self.assertEqual(lines[0], 'install: claude mcp add srv -e "TOKEN=<TOKEN>" -- '
+                                   'docker run -i --rm -e TOKEN -v "<data_dir>:/data" ghcr.io/x/srv:1')
+        self.assertIn("podman", lines[1])
 
     def test_labels(self):
         self.assertEqual(scout.mcp_label("com.figma.mcp/mcp"), "figma")
@@ -210,12 +245,59 @@ class InspectTest(unittest.TestCase):
         self.assertEqual(out.count("⚠ hook SessionStart[*] command: curl x | sh"), 1)
 
     def test_broad_grants(self):
-        broad = ["Bash", "Bash(*)", "Bash(python3 *)", "Bash(node:*)", "- Bash - Read", "Write", "Edit(**)"]
-        narrow = ["Bash(git status *)", "Bash(python3 /x/scout.py *)", "Read Grep", "Edit(./docs/**)", "WebSearch"]
+        broad = ["Bash", "Bash(*)", "Bash(python3 *)", "Bash(node:*)", "- Bash - Read", "Write", "Edit(**)",
+                 '["Bash", "Read"]', '- "Bash" - Read', "Bash(bash -c *)", "Bash(python3 -c *)", "Bash(sh -c:*)",
+                 "Bash(npm *)", "Bash(npm run *)", "Bash(npx *)", "Bash(docker run *)", "Bash(sudo *)",
+                 "Edit(/**)", "Write(~/**)"]
+        narrow = ["Bash(git status *)", "Bash(python3 /x/scout.py *)", "Bash(python3 ${CLAUDE_SKILL_DIR}/s.py *)",
+                  "Read Grep", "Edit(./docs/**)", "WebSearch", "Bash(npm run test *)", "Bash(npx prettier *)",
+                  "Bash(claude plugin list *)"]
         for value in broad:
-            self.assertTrue(scout.BROAD_GRANT.search(value), value)
+            self.assertTrue(scout.broad_grants(value), value)
         for value in narrow:
-            self.assertFalse(scout.BROAD_GRANT.search(value), value)
+            self.assertFalse(scout.broad_grants(value), value)
+
+    def test_custom_component_paths_and_frontmatter_hooks(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, ".claude-plugin/plugin.json", json.dumps({
+                "name": "x", "skills": ["./extra/"], "commands": {
+                    "go": {"source": "./cmds/go.md"}, "fast": {"content": "hi", "allowedTools": ["Bash(npx *)"]}}}))
+            self.write(root, "cmds/go.md", "---\ndescription: d\nallowed-tools: Bash(python3 -c *)\n---\n")
+            self.write(root, "extra/s1/SKILL.md", "---\nname: s1\ndescription: d\nhooks:\n  PreToolUse: []\n---\n")
+            out = run(scout.cmd_inspect, SimpleNamespace(target=root))
+        self.assertIn("Components: 1 skills (s1), 1 commands", out)
+        self.assertIn("⚠ cmds/go.md pre-approves tools: Bash(python3 -c *) (broad: Bash(python3 -c *))", out)
+        self.assertIn("⚠ extra/s1/SKILL.md registers hooks while it runs", out)
+        self.assertIn("⚠ plugin.json commands.fast pre-approves tools: Bash(npx *)", out)
+
+    def test_many_docs_are_sorted_and_the_cap_is_reported(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, ".claude-plugin/plugin.json", json.dumps({"name": "x"}))
+            for i in range(65):
+                tools = "Bash" if i == 3 else "Read"
+                self.write(root, "skills/s%02d/SKILL.md" % i, "---\nname: s\nallowed-tools: %s\n---\n" % tools)
+            out = run(scout.cmd_inspect, SimpleNamespace(target=root))
+        self.assertIn("! checked 60 of 65 skill and command files", out)
+        self.assertIn("⚠ skills/s03/SKILL.md pre-approves tools: Bash", out)
+
+    def test_empty_or_unrelated_folders_get_no_clean_verdict(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = run(scout.cmd_inspect, SimpleNamespace(target=root))
+            self.assertIn("! no files at", out)
+            self.write(root, "README.md", "hello")
+            out = run(scout.cmd_inspect, SimpleNamespace(target=root))
+        self.assertIn("? no plugin.json, skills, commands or agents here", out)
+        self.assertNotIn("✓", out)
+
+    def test_malformed_files_do_not_crash(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, ".claude-plugin/plugin.json", "null")
+            self.write(root, "hooks/hooks.json", json.dumps({"hooks": {"PreToolUse": ["x", {"hooks": [3]}]}}))
+            self.write(root, ".mcp.json", json.dumps({"mcpServers": {"a": {"command": "x", "env": ["bad"]}}}))
+            self.write(root, "skills/a/SKILL.md", "---\nname: a\n---\n")
+            out = run(scout.cmd_inspect, SimpleNamespace(target=root))
+        self.assertIn("! plugin.json is not a JSON object", out)
+        self.assertIn("⚠ local MCP a: x", out)
 
     def test_mod_is_flagged(self):
         lines = scout.summarize_hooks({"modules": ["./register.js"]}, "hooks/hooks.json")
@@ -228,8 +310,14 @@ class InspectTest(unittest.TestCase):
         self.assertEqual((src, server), (None, "com.figma.mcp/mcp"))
         src, server = scout.resolve_target("owner/repo/sub/dir")
         self.assertEqual((src.repo, src.path), ("owner/repo", "sub/dir"))
-        src, server = scout.resolve_target("./missing/dir")
-        self.assertIsNone(server)
+        src, server = scout.resolve_target("github.com/owner/repo")
+        self.assertEqual((src.repo, src.path), ("owner/repo", ""))
+        for bad in ("./missing/dir", "/abs/missing/plugin", "https://github.com/o/r/tree/--upload-pack=x/p",
+                    "not a target"):
+            with self.assertRaises(scout.FetchError):
+                scout.resolve_target(bad)
+        with self.assertRaises(scout.FetchError):
+            scout.git_listing("o/r", "--upload-pack=touch", "")
 
 
 if __name__ == "__main__":

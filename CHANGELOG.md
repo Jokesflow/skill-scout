@@ -16,7 +16,7 @@ All notable changes to this project are documented here. The format follows
 - `scout.py` helper with `inventory`, `plugins`, `mcp`, `github` and `inspect` commands.
   Read-only, standard library only, Python 3.8+.
 - Reference notes on sources, fallbacks, install commands and the vetting rubric.
-- Eval suite for `claude plugin eval` (design, code, research, marketing and a negative case)
+- Eval suite for `claude plugin eval` (design, code, research, marketing, quick mode and a negative case)
   and offline unit tests.
 - MIT license.
 

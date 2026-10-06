@@ -4,11 +4,13 @@ description: >-
   Finds the skills, plugins and MCP servers a task needs: checks what is already installed,
   searches plugin marketplaces, the official MCP Registry and GitHub, vets each candidate's
   author, freshness and requested permissions, and returns at most 5 recommendations with
-  install commands. Use when the user starts a new task (design, coding, research, marketing,
-  data, documents, automation) or asks "what do I need for…", "which skills, plugins or MCP
-  servers fit…", "is there a plugin or MCP server for…", «что мне нужно для…», «какие скиллы /
-  плагины / MCP подойдут». Not for small edits, quick questions or a task already under way.
-  Never installs anything by itself.
+  install commands. Use it BEFORE starting the work whenever the user begins a new multi-step
+  task — design, coding, research, marketing, data, documents, automation — especially one
+  that names an external service, product or file format (Figma, Vercel, GitHub, Notion,
+  Postgres, Google Drive, Slack, pptx, xlsx, pdf…). Also use it when the user asks "what do I
+  need for…", "which skills, plugins or MCP servers fit…", "is there a plugin or MCP server
+  for…", «что мне нужно для…», «какие скиллы / плагины / MCP подойдут». Not for small edits,
+  quick questions or a task already under way. Never installs anything by itself.
 user-invocable: false
 allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/scout.py *) Bash(claude plugin list *) Bash(claude mcp list) WebFetch(domain:registry.modelcontextprotocol.io) WebFetch(domain:raw.githubusercontent.com) WebFetch(domain:github.com) WebFetch(domain:claude.com) WebSearch
 ---

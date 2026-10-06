@@ -81,7 +81,7 @@ signed in with the same claude.ai account. In `/mcp` they show up as `claude.ai 
 | Plugin from an added marketplace | `/plugin install <name>@<marketplace>`; in a shell `claude plugin install <name>@<marketplace>` (`--scope user` by default, `project`, `local`), then `/reload-plugins` |
 | Marketplace | `/plugin marketplace add <owner/repo>` or `claude plugin marketplace add <owner/repo>` |
 | Remote MCP server | `claude mcp add --transport http <name> <url>`; with a token add `--header "Authorization: Bearer <token>"`; for OAuth sign in with `/mcp` or `claude mcp login <name>` |
-| Local MCP server from npm | `claude mcp add <name> -e KEY=<value> -- npx -y <package>@<version>` |
+| Local MCP server from npm | `claude mcp add <name> -e "KEY=<value>" -- npx -y <package>@<version>` |
 | Local MCP server from PyPI | `claude mcp add <name> -- uvx <package>@<version>` |
 | Local MCP server in Docker | `claude mcp add <name> -- docker run -i --rm <image>` |
 

@@ -161,7 +161,8 @@ What `scout.py inspect` flags before you install a plugin:
 | ⚠ Local MCP servers | A process with your user rights (`npx`, `uvx`, `docker`…) |
 | • Remote MCP servers | Your data goes to that service; tokens and OAuth scopes listed |
 | ⚠ `bin/` executables | Added to the `PATH` of Claude's shell |
-| ⚠ Broad `allowed-tools` | Bare `Bash`, `Write`, `Edit` or `Bash(python3 *)` run without asking |
+| ⚠ Broad `allowed-tools` | Bare `Bash`/`Write`/`Edit`, `Bash(python3 *)`, `Bash(npx *)`, `Edit(/**)`… run without asking |
+| ⚠ Hooks in skill frontmatter | Registered while that skill runs |
 | • `userConfig` secrets, dependencies | What the plugin will ask you for and what it pulls in |
 | Freshness and author | Last change, stars, license, archived repos, vendor vs. lookalike |
 
@@ -212,6 +213,7 @@ The same cases live in [`evals/`](evals) for `claude plugin eval`.
 | Code | «Пишу REST API на FastAPI с PostgreSQL: нужны миграции, тесты и ревью кода перед PR…» | `/code-review` and built-in Bash as already available; GitHub plugin, a Python LSP or quality gate, an MCP server or connector for the database with a ⚠ about write access. No plugin needed for Alembic. |
 | Research | `/scout ресёрч рынка AI-ассистентов для юристов: свежие источники, научные статьи и итоговый отчёт в PDF` | `/scout` hands off to the skill. Web search and a PDF skill as available; a paper-search tool with warnings about its author or local process. |
 | Marketing | "I'm launching a SaaS product next month: social posts, an SEO audit of our landing page and a weekly analytics report…" | An English answer with English headings; covers all three needs. |
+| Quick mode | "Build a quarterly sales deck in PowerPoint from our Google Sheets pipeline data and post a summary to our Slack #sales channel." | A direct task, not a question: skill-scout still runs first, briefly. It names the pptx skill you already have and the Google Sheets and Slack connectors with their access warnings, then asks before connecting anything. |
 | Negative | «Переименуй в этом фрагменте переменную x в total…» | skill-scout stays out of the way. |
 
 ## Development
@@ -249,7 +251,7 @@ skill-scout/
 `/scout` is a skill with `disable-model-invocation: true` rather than a file in `commands/`,
 because the Claude Code docs call commands the older format. The main skill is
 `user-invocable: false`, so the `/` menu shows a single command. Context cost from
-`claude plugin details`: about 300 tokens always on, about 3k when the skill runs.
+`claude plugin details`: about 380 tokens always on, about 3k when the skill runs.
 
 ## FAQ
 
