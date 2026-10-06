@@ -33,7 +33,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-UA = "skill-scout/0.1 (+https://github.com/jokesflow/skill-scout)"
+UA = "skill-scout/0.1 (+https://github.com/Jokesflow/skill-scout)"
 TIMEOUT = 15
 REGISTRY = "https://registry.modelcontextprotocol.io/v0.1"
 GITHUB_API = "https://api.github.com"

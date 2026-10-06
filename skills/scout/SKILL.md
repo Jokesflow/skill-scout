@@ -1,15 +1,16 @@
 ---
 name: scout
-description: Подобрать скиллы, плагины и MCP-серверы под задачу. Пример — /scout лендинг по макету из Figma на Next.js
-argument-hint: <описание задачи>
+description: Find the skills, plugins and MCP servers a task needs, e.g. /scout landing page from a Figma mockup in Next.js
+argument-hint: <task description>
 disable-model-invocation: true
 ---
 
-Пользователь запустил `/scout`. Задача: $ARGUMENTS
+The user ran `/scout`. Task: $ARGUMENTS
 
-Вызови инструментом Skill скилл `skill-scout:skill-scout` и передай в `args` текст задачи.
-Это явный запрос, поэтому выполни его алгоритм полностью, в полном режиме. Если инструмент
-Skill недоступен, прочитай `${CLAUDE_PLUGIN_ROOT}/skills/skill-scout/SKILL.md` и следуй ему.
+Use the Skill tool to invoke `skill-scout:skill-scout` and pass the task text as `args`. This
+is an explicit request, so run its full mode. If the Skill tool is unavailable, read
+`${CLAUDE_PLUGIN_ROOT}/skills/skill-scout/SKILL.md` and follow it.
 
-Если задача выше пустая, возьми её из последних сообщений пользователя. Если задачи нет и
-там, спроси одной фразой: «Опиши задачу: что нужно сделать и какой результат нужен?»
+If the task above is empty, take it from the user's recent messages. If there is no task
+there either, ask in one sentence, in the user's language, what they need to do and what the
+result should be.

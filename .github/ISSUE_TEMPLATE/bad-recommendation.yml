@@ -1,0 +1,30 @@
+name: Bad recommendation
+description: skill-scout suggested the wrong tool, missed a better one or missed a risk.
+labels: ["recommendation"]
+body:
+  - type: textarea
+    id: prompt
+    attributes:
+      label: Your request
+      description: What you asked, or the /scout command you ran. Remove private details.
+    validations:
+      required: true
+  - type: textarea
+    id: answer
+    attributes:
+      label: What skill-scout answered
+      description: Paste the relevant part of the answer.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What was wrong and what you expected
+      description: A wrong tool, a missed better option, a missed warning, a broken link or command…
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Claude Code version
+      placeholder: claude --version

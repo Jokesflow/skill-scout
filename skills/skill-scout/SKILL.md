@@ -1,163 +1,178 @@
 ---
 name: skill-scout
 description: >-
-  Подбирает под задачу пользователя скиллы, плагины и MCP-серверы: проверяет, что уже
-  установлено, ищет недостающее в маркетплейсах плагинов, реестре MCP и на GitHub,
-  оценивает автора, свежесть и запрашиваемые права и выдаёт до 5 проверенных рекомендаций
-  с командами установки. Срабатывает, когда пользователь начинает новую задачу (дизайн,
-  код, ресёрч, маркетинг, данные, документы, автоматизация) или спрашивает «что мне нужно
-  для…», «какие скиллы / плагины / MCP подойдут», "what tools, plugins or MCP servers do I
-  need for…", "is there a plugin or MCP server for…". Не срабатывает на мелкие правки,
-  короткие вопросы и продолжение уже начатой задачи. Сам ничего не устанавливает.
+  Finds the skills, plugins and MCP servers a task needs: checks what is already installed,
+  searches plugin marketplaces, the official MCP Registry and GitHub, vets each candidate's
+  author, freshness and requested permissions, and returns at most 5 recommendations with
+  install commands. Use when the user starts a new task (design, coding, research, marketing,
+  data, documents, automation) or asks "what do I need for…", "which skills, plugins or MCP
+  servers fit…", "is there a plugin or MCP server for…", «что мне нужно для…», «какие скиллы /
+  плагины / MCP подойдут». Not for small edits, quick questions or a task already under way.
+  Never installs anything by itself.
 user-invocable: false
 allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/scout.py *) Bash(claude plugin list *) Bash(claude mcp list) WebFetch(domain:registry.modelcontextprotocol.io) WebFetch(domain:raw.githubusercontent.com) WebFetch(domain:github.com) WebFetch(domain:claude.com) WebSearch
 ---
 
 # Skill Scout
 
-Ты подбираешь под задачу пользователя недостающие скиллы, плагины и MCP-серверы. Ты только
-ищешь, проверяешь и советуешь. Ничего не устанавливай, не включай и не подключай, пока
-пользователь явно не выбрал, что ставить.
+You find the skills, plugins and MCP servers that the user's task is missing. You only search,
+vet and recommend. Never install, enable or connect anything until the user has explicitly
+chosen what to install.
 
-Задача, если её передали аргументом: $ARGUMENTS
-Если аргумента нет, бери задачу из последнего сообщения пользователя.
+Task, if it was passed as an argument: $ARGUMENTS
+Without an argument, take the task from the user's latest message.
 
-## Режим
+## Mode
 
-- **Полный.** Пользователь сам попросил подбор: `/scout`, «что мне нужно для…», «какие
-  плагины подойдут». Выполни все шаги.
-- **Быстрый.** Ты вызвал скилл сам в начале новой задачи. Сделай шаги 1 и 2 и не больше
-  трёх поисков по главным потребностям, без GitHub. Если ставить нечего, ответь одной
-  строкой («Для этой задачи хватает того, что есть: …» или «Доп. инструменты не нужны»)
-  и сразу продолжай задачу. Если нашёл то, что заметно меняет результат, покажи короткий
-  отчёт и спроси, ставить ли, прежде чем начинать работу.
-- Подбор для одной задачи делай один раз. Не повторяй его на каждом шаге.
+- **Full.** The user asked for this: `/scout`, "what do I need for…", "which plugins fit…".
+  Do every step.
+- **Quick.** You invoked the skill yourself at the start of a new task. Do steps 1 and 2 and
+  at most three searches for the main needs, without GitHub. If nothing is worth installing,
+  answer in one line ("What you have is enough for this task: …" or "No extra tools needed")
+  and carry on with the task. If you found something that clearly changes the result, show a
+  short report and ask whether to install it before you start the work.
+- Scout once per task. Don't repeat it at every step.
 
-## Шаг 1. Разбери задачу
+## Step 1. Break down the task
 
-Определи тип (дизайн, код, ресёрч, маркетинг, данные, документы, автоматизация), стек и
-внешние сервисы (Figma, GitHub, Notion, Postgres, Google Drive…) и конечный результат
-(файл и его формат, сайт, код или PR, отчёт, дашборд).
+Work out the type (design, code, research, marketing, data, documents, automation), the stack
+and external services (Figma, GitHub, Notion, Postgres, Google Drive…) and the end result (a
+file and its format, a site, code or a PR, a report, a dashboard).
 
-Сформулируй 2–5 потребностей, например «прочитать макет из Figma» или «собрать .pptx».
-Для каждой подбери 1–3 английских ключевых слова: сначала название продукта, потом
-действие (`figma`, `postgres`, `pptx`, `scraping`). Если задача слишком размыта для
-подбора, задай один уточняющий вопрос вместо поиска.
+Turn that into 2–5 needs, such as "read the mockup from Figma" or "build a .pptx". Give each
+need 1–3 English keywords: the product name first, then the action (`figma`, `postgres`,
+`pptx`, `scraping`). If the task is too vague to scout for, ask one clarifying question
+instead of searching.
 
-## Шаг 2. Проверь, что уже есть
+## Step 2. Check what is already there
 
-1. Свой контекст: список доступных скиллов с описаниями и инструменты подключённых
-   MCP-серверов (`mcp__<server>__*`, включая отложенные, которые видны только по имени).
-2. Если в окружении есть `ListSkills`, `ListPlugins`, `ListConnectors` (claude.ai, Cowork;
-   отложенные загрузи через ToolSearch), вызови их с ключевыми словами.
-3. В Claude Code с shell: `python3 ${CLAUDE_SKILL_DIR}/scripts/scout.py inventory`
-   (установленные плагины, `claude mcp list`, скиллы в `~/.claude/skills` и `.claude/skills`).
-   Если `python3` нет, попробуй `python` или `py -3`; если shell нет, ограничься пунктами 1–2.
+1. Your own context: the list of available skills with their descriptions, and the tools of
+   connected MCP servers (`mcp__<server>__*`, including deferred ones you see only by name).
+2. If the environment has `ListSkills`, `ListPlugins` or `ListConnectors` (claude.ai, Cowork;
+   load deferred ones through ToolSearch), call them with your keywords.
+3. In Claude Code with a shell: `python3 ${CLAUDE_SKILL_DIR}/scripts/scout.py inventory`
+   (installed plugins, `claude mcp list`, skills in `~/.claude/skills` and `.claude/skills`).
+   If there is no `python3`, try `python` or `py -3`; without a shell, stick to items 1–2.
 
-Скрипт заранее разрешён только в точном виде `python3 ${CLAUDE_SKILL_DIR}/scripts/scout.py <команда> …`.
-Запускай каждую команду скрипта отдельным вызовом Bash, без `cd`, переменных, `;`, `&&`, `|`
-и перенаправлений, иначе пользователю придётся подтверждать каждый запуск. Независимые
-вызовы делай параллельно. Если запуск всё же отклонён или ждёт подтверждения, не повторяй
-его: иди по запасным путям и в ответе одной строкой скажи, что проверка была неполной.
+The script is pre-approved only in the exact form
+`python3 ${CLAUDE_SKILL_DIR}/scripts/scout.py <command> …`. Run every script command as its
+own Bash call, without `cd`, variables, `;`, `&&`, `|` or redirects, or the user will have to
+approve each run. Make independent calls in parallel. If a run is still denied or waits for
+approval, don't retry it: take the fallback paths and say in one line that the check was
+incomplete.
 
-Встроенные возможности тоже считаются «уже есть»: чтение и правка файлов, Bash, веб-поиск,
-WebFetch, генерация кода. Не ищи плагин под то, что Claude делает сам. Потребность, которую
-закрывает установленное, в поиск не идёт.
+Built-in abilities count as "already available": reading and editing files, Bash, web
+search, WebFetch, writing code. Don't look for a plugin for something Claude does itself. A
+need that something installed already covers doesn't go to the search.
 
-## Шаг 3. Найди недостающее
+## Step 3. Find what is missing
 
-Ищи только под незакрытые потребности, обычно хватает 2–4 запросов:
+Search only for needs that are still open; 2–4 queries are usually enough:
 
-| Что ищешь | Основной источник | Дополнительно |
+| Looking for | Main source | Also |
 | --- | --- | --- |
-| Плагины, в том числе наборы скиллов | `scout.py plugins <kw>…` | `SearchPlugins`, если есть |
-| MCP-серверы | `scout.py mcp <kw>…` | `SearchMcpRegistry` (коннекторы claude.ai), если есть |
-| Отдельные скиллы | `SearchSkills`, если есть; плагины выше | `scout.py github <kw> --kind skill` |
-| Всё остальное | `scout.py github <kw> --kind mcp\|plugin\|skill` | WebSearch `site:github.com` |
+| Plugins, including skill bundles | `scout.py plugins <kw>…` | `SearchPlugins`, if present |
+| MCP servers | `scout.py mcp <kw>…` | `SearchMcpRegistry` (claude.ai connectors), if present |
+| Standalone skills | `SearchSkills`, if present; the plugins above | `scout.py github <kw> --kind skill` |
+| Anything else | `scout.py github <kw> --kind mcp\|plugin\|skill` | WebSearch `site:github.com` |
 
-`scout.py plugins` ищет по маркетплейсам, которые уже добавлены у пользователя, и по
-каталогам Anthropic (`claude-plugins-official`, `claude-community`, `anthropic-agent-skills`,
-`knowledge-work-plugins`), даже если они не добавлены. `scout.py mcp` ищет в официальном
-реестре MCP, но только по названиям серверов, поэтому подставляй название продукта.
+`scout.py plugins` searches the marketplaces the user has added and Anthropic's catalogs
+(`claude-plugins-official`, `claude-community`, `anthropic-agent-skills`,
+`knowledge-work-plugins`), even ones that aren't added. `scout.py mcp` searches the official
+MCP Registry, which matches server names only, so use product names as keywords.
 
-Если скрипт или источник недоступен (нет сети, лимит GitHub, реестр не отвечает),
-используй запасные пути из [references/sources.md](references/sources.md) и не придумывай
-результаты вместо упавшего источника.
+If the script or a source is unavailable (no network, GitHub rate limit, the registry doesn't
+answer), use the fallbacks in [references/sources.md](references/sources.md). Never make up
+results in place of a source that failed.
 
-## Шаг 4. Оцени кандидатов
+## Step 4. Vet the candidates
 
-Отбери до 6 правдоподобных кандидатов и по каждому проверь:
+Shortlist up to 6 plausible candidates and check each one:
 
-- **Покрытие:** какую потребность закрывает, целиком или частично. Пересекающиеся
-  кандидаты не рекомендуй вместе, выбери лучший.
-- **Автор:** вендор сервиса (репозиторий `github.com/figma/…`, имя в реестре на домене
-  вендора — `com.figma.mcp/mcp`) надёжнее Anthropic-каталога со сторонним автором, а тот
-  надёжнее неизвестного частного репозитория. Каталог показывает, кто его ведёт, а не кто
-  написал плагин. Число установок (`installs`) — дополнительный сигнал, не замена проверке.
-- **Свежесть:** дата обновления. Больше 12 месяцев без изменений — пометь; `archived`,
-  `deprecated` и заглушки вместо описания — отбрось.
-- **Права:** для каждого плагина из итогового списка запусти
-  `scout.py inspect <name@marketplace | github-url | owner/repo>`. Он покажет хуки,
-  локальные и удалённые MCP-серверы, исполняемые файлы, `allowed-tools` скиллов,
-  запрашиваемые токены, дату последнего изменения и звёзды. Для MCP права видны в выдаче
-  `scout.py mcp`: удалённый сервер, локальный пакет, нужные секреты; звёзды и активность
-  репозитория покажет `scout.py inspect <имя из реестра>`.
+- **Coverage:** which need it covers, fully or partly. Don't recommend overlapping
+  candidates together; pick the best one.
+- **Author:** the service's own vendor (a `github.com/figma/…` repository, a registry name on
+  the vendor's domain such as `com.figma.mcp/mcp`) beats an Anthropic catalog entry by a third
+  party, which beats an unknown personal repository. A catalog tells you who runs the catalog,
+  not who wrote the plugin. The install count (`installs`) is an extra signal, not a
+  substitute for checking.
+- **Freshness:** the last update. Flag more than 12 months without changes; drop `archived`,
+  `deprecated` and placeholder listings.
+- **Permissions:** for every plugin on the final list run
+  `scout.py inspect <name@marketplace | github-url | owner/repo>`. It shows hooks, local and
+  remote MCP servers, executables, skills' `allowed-tools`, requested tokens, the last change
+  and stars. For MCP servers the permissions are in the `scout.py mcp` output (remote server,
+  local package, required secrets); `scout.py inspect <registry name>` adds the repository's
+  stars and activity.
 
-Предупреди (⚠), если инструмент выполняет команды хуками на каждое действие, запускает
-локальный процесс с доступом к shell или файлам, просит широкий OAuth-доступ (вся почта,
-весь диск, запись) или токен с широкими правами, если автор неизвестен или источник
-сомнительный (мало звёзд, нет лицензии, давно не обновлялся, установка через `curl | sh`,
-имя пакета не совпадает с репозиторием). Правила оценки:
+Warn (⚠) when a tool runs commands through hooks on every action, starts a local process
+with shell or file access, asks for broad OAuth access (all mail, the whole drive, write
+access) or a broadly scoped token, or when the author is unknown or the source is doubtful
+(few stars, no license, stale, installs through `curl | sh`, a package name that doesn't
+match the repository). Describe what a hook or a script does only from what you actually
+read: if all you know is the file name, say which script runs and when ("runs
+`hooks/session-start.mjs` at every session start"), not what you guess it does. Rules:
 [references/evaluation.md](references/evaluation.md).
 
-## Шаг 5. Ответь
+## Step 5. Answer
 
-Не больше 5 рекомендаций, от самой полезной к наименее полезной. Пиши коротко, на языке
-пользователя, и начинай сразу с первого раздела, без вступлений. Пустые разделы
-пропускай. Не пересказывай ход поиска и
-отброшенных кандидатов; исключение — очевидный вариант, отброшенный из-за прав или
-сомнительного источника: о нём одна строка с ⚠. Если какой-то источник не ответил,
-скажи об этом одной строкой.
+At most 5 recommendations, from most to least useful. Keep it short, write in the user's
+language and start straight with the first section, without a preamble. Skip empty sections.
+Don't retell the search or list rejected candidates; the exception is an obvious option
+rejected for its permissions or a doubtful source, which gets one ⚠ line. If a source didn't
+answer, say so in one line.
+
+Section headings, in the user's language:
+
+| English | Russian |
+| --- | --- |
+| **Already available** | **Уже есть и пригодится** |
+| **Worth installing** | **Стоит поставить** |
+| **Not found** | **Не найдено** |
+
+For any other language, translate the English headings.
 
 ```
-**Уже есть и пригодится**
-- **<название>** — <для чего в этой задаче>
+**Already available**
+- **<name>** — <what it's for in this task>
 
-**Стоит поставить**
-1. **<название>** · <skill | plugin | MCP> — <что даёт для этой задачи>
-   <ссылка> · <автор>, обновлён <дата>
-   `<команда установки>`
-   ⚠ <предупреждение, только если есть>
+**Worth installing**
+1. **<name>** · <skill | plugin | MCP> — <what it gives this task>
+   <link> · <author>, updated <date>
+   `<install command>`
+   ⚠ <warning, only if there is one>
 
-**Не найдено**
-- <часть задачи> — <чем закрыть без инструмента>
+**Not found**
+- <part of the task> — <how to cover it without a tool>
 
-Что поставить? Напиши номера — без твоего подтверждения ничего не устанавливаю.
+Which ones should I install? Reply with the numbers — nothing gets installed without your confirmation.
 ```
 
-Правила:
+In Russian the closing line is: «Что поставить? Напиши номера — без твоего подтверждения
+ничего не устанавливаю.»
 
-- Названия, ссылки, версии, даты и команды бери только из вывода инструментов этой сессии.
-  Чего не проверил, того не пиши. Если команду установки не удалось подтвердить, дай
-  ссылку на README вместо команды.
-- Плагин ставится командой `/plugin install <name>@<marketplace>`: она открывает карточку
-  с составом плагина и выбором scope. Если маркетплейс не добавлен, сначала
-  `/plugin marketplace add <owner/repo>`. Для MCP давай `claude mcp add …` из выдачи
-  скрипта, для коннекторов claude.ai — «подключить в Settings → Connectors».
-- Если задача решается без дополнительных инструментов, ответь одной строкой:
-  «Доп. инструменты не нужны: <почему>».
+Rules:
 
-## После ответа
+- Take names, links, versions, dates and commands only from tool output in this session. If
+  you didn't verify it, don't write it. If an install command couldn't be confirmed, link the
+  README instead of giving a command.
+- A plugin installs with `/plugin install <name>@<marketplace>`, which opens a card with the
+  plugin's components and a scope choice. If the marketplace isn't added yet, first
+  `/plugin marketplace add <owner/repo>`. For MCP servers give the `claude mcp add …` line from
+  the script output; for claude.ai connectors, "connect in Settings → Connectors".
+- If the task needs no extra tools, answer in one line: "No extra tools needed: <why>".
 
-Ставь только то, что пользователь выбрал, и только после его подтверждения:
+## After the answer
 
-- **Плагин.** В терминале пользователь запускает `/plugin install <id>` сам. Если он
-  попросил поставить за него, выполни `claude plugin install <id>` (user scope по умолчанию)
-  и попроси выполнить `/reload-plugins`. Если маркетплейс не добавлен, перед этим выполни
-  `claude plugin marketplace add <owner/repo>`.
-- **MCP.** Выполни `claude mcp add …`. Секреты не проси присылать в чат: дай команду с
-  плейсхолдером, пусть пользователь вставит токен сам. Для серверов с OAuth после добавления
-  нужен вход через `/mcp`.
-- **claude.ai и Cowork.** Если есть `SuggestPluginInstall` или `SuggestConnectors`, покажи
-  карточку установки выбранного.
-- Проверь результат (`claude plugin list`, `claude mcp list`) и вернись к исходной задаче.
+Install only what the user picked, and only after they confirm:
+
+- **Plugin.** In a terminal the user runs `/plugin install <id>` themselves. If they ask you
+  to do it, run `claude plugin install <id>` (user scope by default) and ask them to run
+  `/reload-plugins`. If the marketplace isn't added, run
+  `claude plugin marketplace add <owner/repo>` first.
+- **MCP.** Run `claude mcp add …`. Never ask for secrets in the chat: give the command with a
+  placeholder and let the user paste the token. Servers with OAuth need a sign-in through
+  `/mcp` after they are added.
+- **claude.ai and Cowork.** If `SuggestPluginInstall` or `SuggestConnectors` exists, show the
+  install card for what the user picked.
+- Check the result (`claude plugin list`, `claude mcp list`) and return to the original task.
