@@ -1,0 +1,13 @@
+{
+  "name": "skill-scout",
+  "displayName": "Skill Scout",
+  "version": "0.1.0",
+  "description": "Подбирает под задачу скиллы, плагины и MCP-серверы: проверяет, что уже установлено, ищет недостающее в маркетплейсах плагинов, реестре MCP и на GitHub, оценивает автора, свежесть и права. Команда /scout.",
+  "author": {
+    "name": "jokesflow",
+    "url": "https://github.com/jokesflow"
+  },
+  "homepage": "https://github.com/jokesflow/skill-scout",
+  "repository": "https://github.com/jokesflow/skill-scout",
+  "keywords": ["skills", "plugins", "mcp", "discovery", "recommendations"]
+}

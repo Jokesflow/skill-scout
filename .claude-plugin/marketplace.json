@@ -1,0 +1,17 @@
+{
+  "name": "skill-scout",
+  "owner": {
+    "name": "jokesflow",
+    "url": "https://github.com/jokesflow"
+  },
+  "description": "Маркетплейс плагина skill-scout: подбор скиллов, плагинов и MCP-серверов под задачу.",
+  "plugins": [
+    {
+      "name": "skill-scout",
+      "source": "./",
+      "description": "Подбирает под задачу скиллы, плагины и MCP-серверы и проверяет их автора, свежесть и права. Команда /scout.",
+      "category": "productivity",
+      "tags": ["skills", "plugins", "mcp", "discovery"]
+    }
+  ]
+}
