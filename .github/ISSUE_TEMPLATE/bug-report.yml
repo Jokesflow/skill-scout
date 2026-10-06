@@ -1,0 +1,27 @@
+name: Bug report
+description: The plugin or scout.py fails, crashes or prints something wrong.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command or request, and the error or output. Remove tokens and private details.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: claude
+    attributes:
+      label: Claude Code version
+      placeholder: claude --version
+  - type: input
+    id: python
+    attributes:
+      label: Python version and OS
+      placeholder: python3 --version, macOS 15 / Ubuntu 24.04 / Windows 11

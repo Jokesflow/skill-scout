@@ -1,0 +1,24 @@
+{
+  "name": "skill-scout",
+  "displayName": "Skill Scout",
+  "version": "0.1.0",
+  "description": "Finds the skills, plugins and MCP servers your task needs, vets their author, freshness and permissions, and recommends at most five with install commands. Never installs anything without your OK. Command: /scout.",
+  "author": {
+    "name": "Jokesflow",
+    "url": "https://github.com/Jokesflow"
+  },
+  "homepage": "https://github.com/Jokesflow/skill-scout",
+  "repository": "https://github.com/Jokesflow/skill-scout",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "plugins",
+    "mcp",
+    "mcp-registry",
+    "discovery",
+    "recommendations",
+    "security",
+    "supply-chain"
+  ],
+  "icon": "./assets/icon.png"
+}
